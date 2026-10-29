@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "updated": "2026-10-28",
+  "source": "Calendriers 2025 et 2026 (estimations pour 2027)",
+  "micro": {
+    "2026-10-31": "Date limite confirmée par l’Urssaf : samedi 31 octobre 2026 à 23h59, sans report au 2 novembre."
+  },
+  "years": {
+    "2027": {
+      "impotsOpen": "2027-04-08",
+      "impotsLimit": { "1": "2027-05-20", "2": "2027-05-27", "3": "2027-06-03" },
+      "aaOpen": "2027-04-26",
+      "aaLimit": "2027-06-18",
+      "confirmed": []
+    }
+  }
+}

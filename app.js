@@ -20,20 +20,71 @@ const Core = (() => {
   const diffDays = (a, b) => Math.round((noon(a) - noon(b)) / 86400000);
   const longDate = (dt) => `${DAYS[dt.getDay()]} ${dt.getDate()} ${MONTHS[dt.getMonth()]} ${dt.getFullYear()}`;
 
-  // Cas confirmés par une source officielle (date exacte, sans report au jour ouvré suivant).
-  const CONFIRMED = {
-    '2026-10-31': 'Date limite confirmée par l’Urssaf : samedi 31 octobre 2026 à 23h59, sans report au 2 novembre.'
-  };
-
-  // Calendriers 2027 : ESTIMATIONS d’après les campagnes 2025 et 2026, à confirmer à la publication.
-  const EST = {
-    2027: {
-      impotsOpen: [3, 8],                                    // 8 avril 2027
-      impotsLimit: { 1: [4, 20], 2: [4, 27], 3: [5, 3] },    // 20 mai, 27 mai, 3 juin 2027
-      aaOpen: [3, 26],                                       // 26 avril 2027
-      aaLimit: [5, 18]                                       // 18 juin 2027
+  // Calendrier des échéances : valeurs intégrées par défaut, remplaçables par dates.json (données seules, validées).
+  const BUILTIN_CAL = {
+    updated: '2026-10-28', source: 'Calendriers 2025 et 2026 (estimations pour 2027)',
+    micro: { '2026-10-31': 'Date limite confirmée par l’Urssaf : samedi 31 octobre 2026 à 23h59, sans report au 2 novembre.' },
+    years: {
+      2027: {
+        impotsOpen: '2027-04-08', impotsLimit: { 1: '2027-05-20', 2: '2027-05-27', 3: '2027-06-03' },
+        aaOpen: '2027-04-26', aaLimit: '2027-06-18', confirmed: []
+      }
     }
   };
+  let CAL = BUILTIN_CAL;
+
+  const ISO_RE = /^\d{4}-\d{2}-\d{2}$/;
+  function okDate(s, y, mMin, mMax) {
+    if (typeof s !== 'string' || !ISO_RE.test(s)) return null;
+    const dt = fromIso(s);
+    if (iso(dt) !== s) return null;                                   // 2027-02-31 -> refusé
+    if (y != null && dt.getFullYear() !== y) return null;
+    if (y != null && (dt.getMonth() + 1 < mMin || dt.getMonth() + 1 > mMax)) return null;
+    return s;
+  }
+  const CONF_KEYS = ['impotsOpen', 'impotsLimit', 'aaOpen', 'aaLimit'];
+  // Tout ou rien : un seul champ invalide et le fichier entier est ignoré.
+  function validateCal(j) {
+    if (!isObj(j) || j.schema !== 1) return null;
+    const updated = okDate(j.updated);
+    if (!updated || updated < '2026-01-01' || updated > '2100-01-01') return null;
+    const out = { updated, source: typeof j.source === 'string' ? j.source.slice(0, 160) : '', micro: {}, years: {} };
+    if (j.micro !== undefined) {
+      if (!isObj(j.micro) || Object.keys(j.micro).length > 20) return null;
+      for (const k of Object.keys(j.micro)) {
+        if (!okDate(k) || k < '2026-01-01' || k > '2045-12-31' || typeof j.micro[k] !== 'string') return null;
+        out.micro[k] = j.micro[k].slice(0, 220);
+      }
+    }
+    if (!isObj(j.years) || Object.keys(j.years).length > 10) return null;
+    for (const ys of Object.keys(j.years)) {
+      if (!/^20[2-4]\d$/.test(ys)) return null;
+      const y = Number(ys), e = j.years[ys];
+      if (y < 2027 || !isObj(e) || !isObj(e.impotsLimit)) return null;
+      const r = { impotsOpen: okDate(e.impotsOpen, y, 3, 5), aaOpen: okDate(e.aaOpen, y, 3, 5), aaLimit: okDate(e.aaLimit, y, 5, 7), impotsLimit: {}, confirmed: [] };
+      for (const z of ['1', '2', '3']) r.impotsLimit[z] = okDate(e.impotsLimit[z], y, 5, 6);
+      if (!r.impotsOpen || !r.aaOpen || !r.aaLimit || Object.values(r.impotsLimit).some((v) => !v)) return null;
+      if (r.impotsOpen >= r.impotsLimit[1] || r.aaOpen >= r.aaLimit) return null;
+      if (e.confirmed !== undefined) {
+        if (!Array.isArray(e.confirmed) || e.confirmed.length > 4 || e.confirmed.some((c) => !CONF_KEYS.includes(c))) return null;
+        r.confirmed = [...new Set(e.confirmed)];
+      }
+      out.years[y] = r;
+    }
+    return out;
+  }
+  // Applique un calendrier validé ; refuse un fichier plus ancien que celui déjà en place (anti-retour en arrière).
+  function applyCalendar(json) {
+    const v = validateCal(json);
+    if (!v) return { ok: false, reason: 'invalide' };
+    if (v.updated < CAL.updated) return { ok: false, reason: 'ancien' };
+    const canon = (o) => JSON.stringify(o, (k, x) => (isObj(x) ? Object.fromEntries(Object.keys(x).sort().map((q) => [q, x[q]])) : x));
+    const changed = canon(v) !== canon(CAL);
+    CAL = v;
+    return { ok: true, changed, cal: v };
+  }
+  const calInfo = () => ({ updated: CAL.updated, source: CAL.source });
+  const calReset = () => { CAL = BUILTIN_CAL; };
 
   function microItems(freq, start, end) {
     const out = [];
@@ -51,8 +102,8 @@ const Core = (() => {
       const official = lastDay(y, m);
       let date = official, status = 'usual', note = 'Déclaration obligatoire même si le chiffre d’affaires est nul (0 €).';
       const key = iso(official);
-      if (CONFIRMED[key]) {
-        status = 'confirmed'; note = CONFIRMED[key] + ' Déclaration obligatoire même à 0 €.';
+      if (CAL.micro[key]) {
+        status = 'confirmed'; note = CAL.micro[key] + ' Déclaration obligatoire même à 0 €.';
       } else if (isWE(official)) {
         date = prevBiz(official);
         note = `Échéance officielle : ${DAYS[official.getDay()]} ${official.getDate()} ${MONTHS[official.getMonth()]}. Placée au jour ouvré précédent par précaution (un report n’est pas garanti). Déclaration obligatoire même à 0 €.`;
@@ -66,26 +117,31 @@ const Core = (() => {
 
   function fiscalItems(zone, start, end, want) {
     const out = [];
-    for (const y of Object.keys(EST).map(Number)) {
-      const e = EST[y];
-      const push = (id, kind, date, title, note, url, cta) => {
-        if (date >= start && date <= end) out.push({ id, kind, status: 'estimated', date, title, note, url, cta });
+    for (const y of Object.keys(CAL.years).map(Number)) {
+      const e = CAL.years[y];
+      const push = (id, kind, key, dateIso, title, noteEst, noteOk, url, cta) => {
+        const date = fromIso(dateIso), ok = e.confirmed.includes(key);
+        if (date >= start && date <= end) out.push({ id, kind, status: ok ? 'confirmed' : 'estimated', date, title, note: ok ? noteOk : noteEst, url, cta });
       };
+      const SRC = CAL.source ? ` Source : ${CAL.source}.` : '';
       if (want.impots) {
-        push(`ir-open-${y}`, 'impots', D(y, e.impotsOpen[0], e.impotsOpen[1]), `Impôts · ouverture de la déclaration (revenus ${y - 1})`,
+        push(`ir-open-${y}`, 'impots', 'impotsOpen', e.impotsOpen, `Impôts · ouverture de la déclaration (revenus ${y - 1})`,
           'Date estimée. Droits d’auteur précomptés par un éditeur : traitements et salaires, avec le même montant brut que sur la déclaration Urssaf. Micro-entreprise : chiffre d’affaires en micro-BNC.',
+          'Date confirmée.' + SRC + ' Droits d’auteur précomptés : traitements et salaires, même montant brut que sur la déclaration Urssaf. Micro-entreprise : chiffre d’affaires en micro-BNC.',
           'https://www.impots.gouv.fr', 'Ouvrir impots.gouv.fr');
-        const [lm, ld] = e.impotsLimit[zone] || e.impotsLimit[3];
-        push(`ir-limit-${y}-z${zone}`, 'impots', D(y, lm, ld), `Impôts · date limite en ligne (zone ${zone})`,
+        push(`ir-limit-${y}-z${zone}`, 'impots', 'impotsLimit', e.impotsLimit[zone] || e.impotsLimit[3], `Impôts · date limite en ligne (zone ${zone})`,
           `Date estimée pour la zone ${zone}. À confirmer sur impots.gouv.fr dès la publication du calendrier.`,
+          `Date confirmée pour la zone ${zone}.` + SRC,
           'https://www.impots.gouv.fr', 'Ouvrir impots.gouv.fr');
       }
       if (want.aa) {
-        push(`aa-open-${y}`, 'aa', D(y, e.aaOpen[0], e.aaOpen[1]), `Urssaf artistes-auteurs · ouverture de la déclaration (revenus ${y - 1})`,
+        push(`aa-open-${y}`, 'aa', 'aaOpen', e.aaOpen, `Urssaf artistes-auteurs · ouverture de la déclaration (revenus ${y - 1})`,
           'Date estimée. Vérifier que les droits précomptés par l’éditeur sont déclarés dans la bonne rubrique, au montant brut HT du relevé.',
+          'Date confirmée.' + SRC + ' Vérifier que les droits précomptés par l’éditeur sont déclarés dans la bonne rubrique, au montant brut HT du relevé.',
           'https://www.artistes-auteurs.urssaf.fr', 'Ouvrir l’espace Urssaf');
-        push(`aa-limit-${y}`, 'aa', D(y, e.aaLimit[0], e.aaLimit[1]), `Urssaf artistes-auteurs · date limite (revenus ${y - 1})`,
+        push(`aa-limit-${y}`, 'aa', 'aaLimit', e.aaLimit, `Urssaf artistes-auteurs · date limite (revenus ${y - 1})`,
           'Date estimée. À confirmer sur artistes-auteurs.urssaf.fr dès l’annonce du calendrier.',
+          'Date confirmée.' + SRC,
           'https://www.artistes-auteurs.urssaf.fr', 'Ouvrir l’espace Urssaf');
       }
     }
@@ -185,7 +241,7 @@ const Core = (() => {
     return L.map(fold).join('\r\n') + '\r\n';
   }
 
-  return { MONTHS, MON3, DAYS, D, noon, addDays, iso, fromIso, diffDays, longDate, build, toICS, sanitize, DEFAULTS, isWE, prevBiz };
+  return { MONTHS, MON3, DAYS, D, noon, addDays, iso, fromIso, diffDays, longDate, build, toICS, sanitize, DEFAULTS, isWE, prevBiz, applyCalendar, validateCal, calInfo, calReset };
 })();
 
 if (typeof module !== 'undefined') module.exports = Core;
@@ -473,6 +529,15 @@ if (typeof document !== 'undefined') (() => {
     </section>
 
     <section class="card fade mt12">
+      <h3>Dates des échéances</h3>
+      <p class="small mut mt6 lh">Les dates officielles (impôts, Urssaf artistes-auteurs) sont relues automatiquement à chaque ouverture, depuis un fichier public de dates (<b>dates.json</b>) hébergé avec l’appli. Aucune donnée personnelle n’est envoyée.</p>
+      <p class="small mt10"><b class="w6">Calendrier du ${esc(Core.longDate(Core.fromIso(Core.calInfo().updated)))}</b></p>
+      ${Core.calInfo().source ? `<p class="tiny mut lh">${esc(Core.calInfo().source)}</p>` : ''}
+      <p class="tiny mut mt6">${{ builtin: 'Valeurs intégrées (aucune vérification réussie pour l’instant).', cache: 'Dernières dates connues (vérification en attente).', ok: 'Vérifié à l’ouverture : à jour.', offline: 'Hors ligne : dernières dates connues utilisées.', invalid: 'Fichier de dates refusé : dernières dates sûres conservées.' }[calState.status]}</p>
+      <div class="btns"><button class="btn" data-act="chkdates">Vérifier maintenant</button></div>
+    </section>
+
+    <section class="card fade mt12">
       <h3>Calendrier Apple</h3>
       <p class="small mut mt6 lh">Exporte les échéances à venir vers Calendrier (rappels à 14 et 7 jours et la veille pour les dates estimées). Les notes personnelles ne sont jamais exportées.</p>
       <div class="btns"><button class="btn primary" data-act="ics">Exporter (.ics)</button></div>
@@ -482,7 +547,7 @@ if (typeof document !== 'undefined') (() => {
       <h3>Confidentialité et sécurité</h3>
       <ul class="facts">
         <li>Tout ce que tu saisis reste dans le stockage de cet appareil. Il n’y a ni compte, ni serveur, ni statistiques.</li>
-        <li>Le navigateur bloque toute connexion vers un autre site : l’appli ne peut pas envoyer tes données, même par erreur.</li>
+        <li>Le navigateur bloque toute connexion vers un autre site : l’appli ne peut pas envoyer tes données, même par erreur. Elle ne relit que le fichier public dates.json de son propre site.</li>
         <li>L’hébergeur voit, comme pour tout site, qu’une visite a lieu (adresse IP), jamais ce que tu saisis.</li>
         <li>Effacer les données du site dans Safari, ou supprimer l’appli, efface tout : fais une sauvegarde.</li>
       </ul>
@@ -509,7 +574,7 @@ if (typeof document !== 'undefined') (() => {
       <p class="small mut mt6 lh">Supprime tout ce qui est enregistré par Martinet sur cet appareil.</p>
       <div class="btns"><button class="btn danger" data-act="wipe">Tout effacer</button></div>
     </section>
-    <p class="disclaimer">Sources : impots.gouv.fr (calendrier 2026), service-public.gouv.fr (date limite avancée au 31/10/2026), Urssaf et Urssaf Limousin (calendriers 2025 et 2026). Dates 2027 estimées.</p>`;
+    <p class="disclaimer">Sources : impots.gouv.fr (calendrier 2026), service-public.gouv.fr (date limite avancée au 31/10/2026), Urssaf et Urssaf Limousin (calendriers 2025 et 2026). Dates 2027 estimées jusqu’à publication des calendriers officiels.</p>`;
   }
 
   /* — Rendu — */
@@ -602,9 +667,38 @@ if (typeof document !== 'undefined') (() => {
     render();
   }
 
+  /* — Mise à jour des dates : relit dates.json (même site, données seules, validées) — */
+  const calState = { status: 'builtin', checked: 0 };
+  function loadCachedCal() {
+    try { const c = JSON.parse(raw.get('cal') || 'null'); if (c && Core.applyCalendar(c).ok) calState.status = 'cache'; } catch (e) { /* cache illisible : valeurs intégrées */ }
+  }
+  async function checkDates(manual) {
+    if (!/^https?:$/.test(location.protocol)) return;
+    calState.checked = Date.now();
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 8000);
+    try {
+      const r = await fetch('dates.json', { cache: 'no-store', signal: ctl.signal });
+      if (!r.ok) throw new Error('http');
+      const txt = await r.text();
+      if (txt.length > 20000) throw new Error('taille');
+      const json = JSON.parse(txt);
+      const res = Core.applyCalendar(json);
+      if (!res.ok) { calState.status = res.reason === 'ancien' ? 'ok' : 'invalid'; if (manual) toast(res.reason === 'ancien' ? 'Dates déjà à jour' : 'Fichier de dates refusé (invalide)'); }
+      else {
+        calState.status = 'ok';
+        if (res.changed) { try { raw.set('cal', JSON.stringify(json)); } catch (e) { /* ignoré */ } toast('Dates des échéances mises à jour'); }
+        else if (manual) toast('Dates déjà à jour');
+      }
+    } catch (e) {
+      calState.status = 'offline';
+      if (manual) toast('Hors ligne : dernières dates connues conservées');
+    } finally { clearTimeout(timer); }
+    if (!ui.locked) render();
+  }
+
   function wipe() {
     if (!window.confirm('Effacer toutes les données de Martinet sur cet appareil ? Cette action est définitive.')) return;
-    raw.del('data'); raw.del('vault');
+    raw.del('data'); raw.del('vault'); raw.del('cal');
     S = Core.DEFAULTS(); session.key = null; session.salt = null; ui.locked = false; ui.lockErr = '';
     ui.draft = { micro: false, impots: false, aa: false, freq: 'trim', zone: null }; ui.tab = 'agenda';
     render(); toast('Données effacées');
@@ -631,6 +725,7 @@ if (typeof document !== 'undefined') (() => {
     else if (act === 'freq') { S.settings.freq = el.dataset.v; save(); render(); toast('Périodicité mise à jour'); }
     else if (act === 'cfe') { S.settings.cfe = !S.settings.cfe; save(); render(); }
     else if (act === 'ics') exportICS();
+    else if (act === 'chkdates') checkDates(true);
     else if (act === 'addcustom') {
       const t = $('#ct').value.trim(), dt = $('#cd').value, n = $('#cn').value.trim();
       if (!t || !dt) return toast('Titre et date requis');
@@ -669,11 +764,13 @@ if (typeof document !== 'undefined') (() => {
       document.body.classList.remove('veil');
       if (session.key && Date.now() - hiddenAt > 60000) lockNow();
       else if (!ui.locked) render();
+      if (Date.now() - calState.checked > 6 * 3600 * 1000) checkDates(false);
     }
   });
 
   /* — Démarrage — */
   (function boot() {
+    loadCachedCal();
     try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignoré */ }
     if (raw.get('vault')) { ui.locked = true; render(); return; }
     let parsed = null;
@@ -681,6 +778,7 @@ if (typeof document !== 'undefined') (() => {
     S = Core.sanitize(parsed);
     render();
   })();
+  checkDates(false);
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     window.addEventListener('load', () => { try { navigator.serviceWorker.register('sw.js'); } catch (e) { /* ignoré */ } });

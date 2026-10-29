@@ -4,7 +4,7 @@
 **Aucune donnée personnelle n'est contenue dans le code** : tout est saisi par l'utilisateur sur son appareil.
 
 ## Fichiers
-`index.html`, `app.js`, `style.css`, `sw.js`, `manifest.webmanifest`, `icons/`, `robots.txt`, `.nojekyll`, `_headers`
+`index.html`, `app.js`, `style.css`, `sw.js`, `manifest.webmanifest`, `dates.json`, quatre icônes `.png` (à la racine, pas de sous-dossier), `robots.txt`, `.nojekyll`, `_headers`
 
 ## Publier (au choix)
 - **GitHub Pages** : dépôt avec ces fichiers à la racine → Settings → Pages → branche `main` / racine.
@@ -12,7 +12,7 @@
 - Puis, sur iPhone : ouvrir l'adresse dans Safari → Partager → « Sur l'écran d'accueil ».
 
 ## Modèle de sécurité
-- **Aucun réseau applicatif** : pas de compte, pas de serveur, pas de statistiques, pas de police ou script externe.
+- **Aucun réseau applicatif** : pas de compte, pas de serveur, pas de statistiques, pas de police ou script externe. Seule requête : la relecture de `dates.json` sur le même site (voir « Dates »).
 - **CSP stricte** (balise `<meta>` + `_headers`) : scripts, styles et images uniquement depuis le site lui-même, aucun script ou style en ligne, `form-action 'none'`. Le navigateur refuse toute connexion vers un autre domaine (`connect-src 'self'`, `img-src 'self' data:`).
 - **Données** : stockées dans le `localStorage` de l'appareil uniquement. Toute donnée lue (stockage ou fichier importé) passe par une validation en liste blanche ; tout texte affiché est échappé (pas de HTML injectable).
 - **Verrouillage optionnel** : AES-256-GCM, clé dérivée du code par PBKDF2-SHA256 (310 000 itérations), sel et IV aléatoires. La clé reste en mémoire, jamais stockée. Verrouillage automatique après 1 minute en arrière-plan, voile sur l'aperçu du sélecteur d'applications.
@@ -24,7 +24,15 @@
 - Un code oublié n'est pas récupérable. Un code court ne résiste pas à une attaque menée directement sur l'appareil.
 - L'effacement des données du site (ou la désinstallation) supprime tout : faire des sauvegardes.
 - La sécurité repose sur l'intégrité des fichiers publiés : protéger l'accès au dépôt / compte d'hébergement (authentification à deux facteurs).
-- Les dates 2027 sont des estimations (`EST` dans `app.js`) à confirmer à la publication des calendriers officiels.
+- Les dates 2027 sont des estimations, à confirmer à la publication des calendriers officiels (voir « Dates »).
 
 ## Mises à jour
-Après toute modification, incrémenter `CACHE` dans `sw.js` pour forcer la mise à jour hors ligne.
+Après toute modification du code (pas de `dates.json`), incrémenter `CACHE` dans `sw.js` pour forcer la mise à jour hors ligne.
+
+## Dates des échéances (mise à jour sans toucher au code)
+`dates.json` contient les dates fiscales et Urssaf artistes-auteurs. À chaque ouverture (et au retour au premier plan après 6 h), l'appli le relit et l'applique.
+Pour mettre à jour : sur GitHub, ouvrir `dates.json` → icône crayon → modifier → *Commit changes*. L'appli le prend au lancement suivant.
+- Passer une date en « confirmée » : ajouter son nom dans `"confirmed"` (`impotsOpen`, `impotsLimit`, `aaOpen`, `aaLimit`).
+- Nouvelle année : ajouter un bloc `"2028": { ... }` sur le même modèle ; aucune modification du code.
+- Le fichier est validé en « tout ou rien » (format, dates réelles, mois plausibles, ordre, taille) : s'il est invalide, l'appli garde les dernières dates sûres. `"updated"` ne doit jamais reculer.
+- Ce sont des données seules : jamais exécutées, texte toujours échappé à l'affichage.

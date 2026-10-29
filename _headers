@@ -8,3 +8,6 @@
   X-Robots-Tag: noindex, nofollow, noarchive
 /sw.js
   Cache-Control: no-cache
+
+/dates.json
+  Cache-Control: no-cache
